@@ -7,17 +7,21 @@ import net.minecraft.client.gui.GuiMainMenu;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.EntityPlayerMP;
 import net.minecraft.potion.Potion;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.World;
 import net.minecraft.world.WorldServer;
 import net.minecraftforge.event.world.WorldEvent;
+import net.tropicraft.config.ConfigMisc;
 import net.tropicraft.entity.placeable.EntityChair;
 import net.tropicraft.util.EffectHelper;
 import net.tropicraft.util.TropicraftWorldUtils;
+import net.tropicraft.world.TCTimeAndWeatherData;
 
 import CoroUtil.forge.CoroAI;
 import CoroUtil.world.WorldDirector;
 import CoroUtil.world.WorldDirectorManager;
 import cpw.mods.fml.common.FMLCommonHandler;
+import cpw.mods.fml.common.FMLLog;
 import cpw.mods.fml.common.eventhandler.SubscribeEvent;
 import cpw.mods.fml.common.gameevent.TickEvent;
 import cpw.mods.fml.relauncher.Side;
@@ -28,11 +32,18 @@ public class TCMiscEvents {
 
     @SubscribeEvent
     public void worldLoad(final WorldEvent.Load event) {
-        if (!event.world.isRemote && ((WorldServer) event.world).provider.dimensionId == -127
-            && WorldDirectorManager.instance()
-                .getWorldDirector(CoroAI.modID, event.world) == null) {
+        if (event.world.isRemote
+            || ((WorldServer) event.world).provider.dimensionId != TropicraftWorldUtils.TROPICS_DIMENSION_ID) {
+            return;
+        }
+        if (WorldDirectorManager.instance()
+            .getWorldDirector(CoroAI.modID, event.world) == null) {
             WorldDirectorManager.instance()
                 .registerWorldDirector(new WorldDirector(), CoroAI.modID, event.world);
+        }
+        if (ConfigMisc.separateTimeAndWeather && !TCTimeAndWeatherData.isDetached(event.world.getWorldInfo())) {
+            FMLLog.warning(
+                "[Tropicraft] Could not give the Tropics their own time and weather - the mixins that detach them did not load at all. The Tropics will keep mirroring the overworld until this is sorted out.");
         }
     }
 
@@ -55,14 +66,27 @@ public class TCMiscEvents {
         if (event.phase == TickEvent.Phase.END) {
             EffectHelper.tick();
         }
-        final World world = (World) FMLCommonHandler.instance()
-            .getMinecraftServerInstance()
-            .worldServerForDimension(0);
-        if (world != null && world instanceof WorldServer) {
+        final MinecraftServer server = FMLCommonHandler.instance()
+            .getMinecraftServerInstance();
+        if (server == null || server.worldServers == null) {
+            return;
+        }
+        // Sitting in a chair at sunset whisks the player away to the other dimension. That runs off
+        // the time of the dimension the player is actually in, so now that every dimension can be on
+        // its own clock it also keeps working from the Tropics and from other mod's dimensions.
+        for (final WorldServer world : server.worldServers) {
+            if (world == null) {
+                continue;
+            }
+            // The island's clock starts when somebody actually arrives there, not when the dimension
+            // is created along with the world; see TCTimeAndWeatherData.startOnFirstVisit.
+            TCTimeAndWeatherData.startOnFirstVisit(world);
+            if (!this.isSunset(world)) {
+                continue;
+            }
             for (int ii = 0; ii < world.playerEntities.size(); ++ii) {
                 final Entity entity1 = (Entity) world.playerEntities.get(ii);
                 if (entity1 instanceof EntityPlayerMP && ((EntityPlayerMP) entity1).isPotionActive(Potion.confusion)
-                    && this.isSunset(world)
                     && entity1.ridingEntity instanceof EntityChair) {
                     entity1.ridingEntity = null;
                     TropicraftWorldUtils.teleportPlayer((EntityPlayerMP) entity1);
